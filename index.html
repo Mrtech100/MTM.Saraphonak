@@ -394,191 +394,190 @@ button:disabled{cursor:not-allowed;opacity:.45}
 <input type="file" id="dbFileInput" accept=".db,.sqlite,.sqlite3" style="display:none">
 
 <!-- ============================================================
-     Firebase module (deferred — runs after the main script)
+     Firebase module — YOUR script + Firestore layer
      ============================================================ -->
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-analytics.js";
-import {
-  getFirestore, doc, setDoc, getDoc, deleteDoc,
-  writeBatch, collection, getDocs
-} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+  // Import the functions you need from the SDKs you need
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-analytics.js";
+  // Added for Firestore cloud sync (required by the POS Push/Pull buttons)
+  import {
+    getFirestore, doc, setDoc, getDoc, deleteDoc,
+    writeBatch, collection, getDocs
+  } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
-/* ---------- Firebase configuration ---------- */
-const firebaseConfig = {
-  apiKey: "AIzaSyCmj9fwRLmiQU-g5zvd6XzE8i2X9eNr7TQ",
-  authDomain: "hyperpos-12210.firebaseapp.com",
-  projectId: "hyperpos-12210",
-  storageBucket: "hyperpos-12210.firebasestorage.app",
-  messagingSenderId: "641877559339",
-  appId: "1:641877559339:web:996c5e9499b15ccf89026e",
-  measurementId: "G-QHTGVPS19K"
-};
+  // Your web app's Firebase configuration
+  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+  const firebaseConfig = {
+    apiKey: "AIzaSyCmj9fwRLmiQU-g5zvd6XzE8i2X9eNr7TQ",
+    authDomain: "hyperpos-12210.firebaseapp.com",
+    projectId: "hyperpos-12210",
+    storageBucket: "hyperpos-12210.firebasestorage.app",
+    messagingSenderId: "641877559339",
+    appId: "1:641877559339:web:996c5e9499b15ccf89026e",
+    measurementId: "G-QHTGVPS19K"
+  };
 
-/* ---------- Initialize ---------- */
-let app, analytics = null, fs;
-try {
-  app = initializeApp(firebaseConfig);
-  try { analytics = getAnalytics(app); }
-  catch (e) { console.warn('Analytics unavailable:', e.message); }
-  fs = getFirestore(app);
-} catch (e) {
-  console.error('Firebase init failed:', e);
-}
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const analytics = getAnalytics(app);
 
-/* ---------- Mirrored collections ---------- */
-const TABLES = [
-  'users', 'categories', 'products', 'transactions', 'transaction_items',
-  'settings', 'held_orders', 'stock_movements', 'daily_closes'
-];
+  /* ---------- Firestore instance (added) ---------- */
+  const fs = getFirestore(app);
 
-/* ---------- PUSH: SQLite data -> Firestore ---------- */
-async function pushAll(data, onProgress) {
-  if (!fs) throw new Error('Firestore not initialized');
-  const summary = {};
-  for (const tableName of Object.keys(data)) {
-    const rows = data[tableName] || [];
-    summary[tableName] = rows.length;
-    for (let i = 0; i < rows.length; i += 400) {
-      const batch = writeBatch(fs);
-      const chunk = rows.slice(i, i + 400);
-      for (const row of chunk) {
-        let docId = (tableName === 'settings') ? row.key : row.id;
-        if (!docId) docId = Math.random().toString(36).slice(2);
-        batch.set(doc(fs, tableName, String(docId)), row, { merge: true });
-      }
-      await batch.commit();
-      if (onProgress) onProgress(tableName, Math.min(i + 400, rows.length), rows.length);
-    }
-  }
-  return summary;
-}
-
-/* ---------- PULL: Firestore -> SQLite data ---------- */
-async function pullAll() {
-  if (!fs) throw new Error('Firestore not initialized');
-  const result = {};
-  for (const tableName of TABLES) {
-    const snap = await getDocs(collection(fs, tableName));
-    const rows = [];
-    snap.forEach(d => rows.push(d.data()));
-    result[tableName] = rows;
-  }
-  return result;
-}
-
-/* ---------- Wipe every collection + meta ---------- */
-async function clearAll() {
-  if (!fs) throw new Error('Firestore not initialized');
-  let deleted = 0;
-  for (const tableName of TABLES) {
-    const snap = await getDocs(collection(fs, tableName));
-    const docs = snap.docs;
-    for (let i = 0; i < docs.length; i += 400) {
-      const batch = writeBatch(fs);
-      docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
-      await batch.commit();
-    }
-    deleted += docs.length;
-  }
-  await deleteDoc(doc(fs, '_meta', 'status')).catch(() => {});
-  return deleted;
-}
-
-/* ---------- Metadata document ---------- */
-async function getMeta() {
-  if (!fs) throw new Error('Firestore not initialized');
-  const snap = await getDoc(doc(fs, '_meta', 'status'));
-  return snap.exists() ? snap.data() : null;
-}
-
-async function setMeta(obj) {
-  if (!fs) throw new Error('Firestore not initialized');
-  await setDoc(doc(fs, '_meta', 'status'), obj, { merge: true });
-}
-
-/* ---------- One-shot demo seed (mirrors seedDefaults) ---------- */
-async function seedDemo() {
-  const now = new Date().toISOString();
-  const cats = [
-    { id: 'c1', name: 'Beverages',   color: '#00A76F' },
-    { id: 'c2', name: 'Snacks',      color: '#D97706' },
-    { id: 'c3', name: 'Food',        color: '#DC2A3E' },
-    { id: 'c4', name: 'Electronics', color: '#2563EB' },
-    { id: 'c5', name: 'Accessories', color: '#7C3AED' },
-    { id: 'c6', name: 'Other',       color: '#DB2777' }
+  /* ---------- Mirrored collections ---------- */
+  const TABLES = [
+    'users', 'categories', 'products', 'transactions', 'transaction_items',
+    'settings', 'held_orders', 'stock_movements', 'daily_closes'
   ];
-  const products = [
-    ['p1','Espresso','1111111111',2.50,1.00,200,'c1'],
-    ['p2','Cappuccino','1111111112',4.00,1.50,150,'c1'],
-    ['p3','Fresh Juice','1111111113',5.00,2.00,80,'c1'],
-    ['p4','Mineral Water','1111111114',1.00,0.30,500,'c1'],
-    ['p5','Chips Pack','2222222221',1.50,0.60,300,'c2'],
-    ['p6','Chocolate Bar','2222222222',2.00,0.90,250,'c2'],
-    ['p7','Mixed Nuts','2222222223',4.50,2.50,100,'c2'],
-    ['p8','Sandwich','3333333331',6.00,2.50,60,'c3'],
-    ['p9','Pizza Slice','3333333332',4.50,1.80,40,'c3'],
-    ['p10','Salad Bowl','3333333333',7.00,3.00,30,'c3'],
-    ['p11','USB Cable','4444444441',5.00,1.50,100,'c4'],
-    ['p12','Phone Case','4444444442',8.00,2.50,75,'c5'],
-    ['p13','Power Bank','4444444443',15.00,6.00,25,'c4'],
-    ['p14','Sunglasses','5555555551',12.00,4.00,20,'c5'],
-    ['p15','Notebook','6666666661',3.00,1.00,200,'c6'],
-    ['p16','Pen Set','6666666662',2.50,0.80,300,'c6']
-  ].map(p => ({
-    id: p[0], name: p[1], barcode: p[2], price_usd: p[3],
-    cost_usd: p[4], stock: p[5], category_id: p[6], created: now
+
+  /* ---------- PUSH: SQLite data -> Firestore ---------- */
+  async function pushAll(data, onProgress) {
+    if (!fs) throw new Error('Firestore not initialized');
+    const summary = {};
+    for (const tableName of Object.keys(data)) {
+      const rows = data[tableName] || [];
+      summary[tableName] = rows.length;
+      for (let i = 0; i < rows.length; i += 400) {
+        const batch = writeBatch(fs);
+        const chunk = rows.slice(i, i + 400);
+        for (const row of chunk) {
+          let docId = (tableName === 'settings') ? row.key : row.id;
+          if (!docId) docId = Math.random().toString(36).slice(2);
+          batch.set(doc(fs, tableName, String(docId)), row, { merge: true });
+        }
+        await batch.commit();
+        if (onProgress) onProgress(tableName, Math.min(i + 400, rows.length), rows.length);
+      }
+    }
+    return summary;
+  }
+
+  /* ---------- PULL: Firestore -> SQLite data ---------- */
+  async function pullAll() {
+    if (!fs) throw new Error('Firestore not initialized');
+    const result = {};
+    for (const tableName of TABLES) {
+      const snap = await getDocs(collection(fs, tableName));
+      const rows = [];
+      snap.forEach(d => rows.push(d.data()));
+      result[tableName] = rows;
+    }
+    return result;
+  }
+
+  /* ---------- Wipe every collection + meta ---------- */
+  async function clearAll() {
+    if (!fs) throw new Error('Firestore not initialized');
+    let deleted = 0;
+    for (const tableName of TABLES) {
+      const snap = await getDocs(collection(fs, tableName));
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = writeBatch(fs);
+        docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+      deleted += docs.length;
+    }
+    await deleteDoc(doc(fs, '_meta', 'status')).catch(() => {});
+    return deleted;
+  }
+
+  /* ---------- Metadata document ---------- */
+  async function getMeta() {
+    if (!fs) throw new Error('Firestore not initialized');
+    const snap = await getDoc(doc(fs, '_meta', 'status'));
+    return snap.exists() ? snap.data() : null;
+  }
+
+  async function setMeta(obj) {
+    if (!fs) throw new Error('Firestore not initialized');
+    await setDoc(doc(fs, '_meta', 'status'), obj, { merge: true });
+  }
+
+  /* ---------- One-shot demo seed ---------- */
+  async function seedDemo() {
+    const now = new Date().toISOString();
+    const cats = [
+      { id: 'c1', name: 'Beverages',   color: '#00A76F' },
+      { id: 'c2', name: 'Snacks',      color: '#D97706' },
+      { id: 'c3', name: 'Food',        color: '#DC2A3E' },
+      { id: 'c4', name: 'Electronics', color: '#2563EB' },
+      { id: 'c5', name: 'Accessories', color: '#7C3AED' },
+      { id: 'c6', name: 'Other',       color: '#DB2777' }
+    ];
+    const products = [
+      ['p1','Espresso','1111111111',2.50,1.00,200,'c1'],
+      ['p2','Cappuccino','1111111112',4.00,1.50,150,'c1'],
+      ['p3','Fresh Juice','1111111113',5.00,2.00,80,'c1'],
+      ['p4','Mineral Water','1111111114',1.00,0.30,500,'c1'],
+      ['p5','Chips Pack','2222222221',1.50,0.60,300,'c2'],
+      ['p6','Chocolate Bar','2222222222',2.00,0.90,250,'c2'],
+      ['p7','Mixed Nuts','2222222223',4.50,2.50,100,'c2'],
+      ['p8','Sandwich','3333333331',6.00,2.50,60,'c3'],
+      ['p9','Pizza Slice','3333333332',4.50,1.80,40,'c3'],
+      ['p10','Salad Bowl','3333333333',7.00,3.00,30,'c3'],
+      ['p11','USB Cable','4444444441',5.00,1.50,100,'c4'],
+      ['p12','Phone Case','4444444442',8.00,2.50,75,'c5'],
+      ['p13','Power Bank','4444444443',15.00,6.00,25,'c4'],
+      ['p14','Sunglasses','5555555551',12.00,4.00,20,'c5'],
+      ['p15','Notebook','6666666661',3.00,1.00,200,'c6'],
+      ['p16','Pen Set','6666666662',2.50,0.80,300,'c6']
+    ].map(p => ({
+      id: p[0], name: p[1], barcode: p[2], price_usd: p[3],
+      cost_usd: p[4], stock: p[5], category_id: p[6], created: now
+    }));
+
+    const users = [
+      { id: 'u1', username: 'admin',   password: 'admin123',   name: 'Administrator', role: 'admin',   created: now },
+      { id: 'u2', username: 'cashier', password: 'cashier123', name: 'Cashier User',  role: 'cashier', created: now }
+    ];
+
+    const settings = {
+      store_name: 'My Store', store_address: 'Beirut, Lebanon',
+      store_phone: '+961 1 234 567', tax_rate: '11', tax_enabled: 'true',
+      exchange_rate: '90000', default_currency: 'USD',
+      receipt_footer: 'Thank you for your purchase!', auto_print: 'false',
+      paper_width: '80mm', cash_drawer_enabled: 'true', sound_enabled: 'true',
+      barcode_auto_add: 'true', show_stock: 'true', low_stock_threshold: '10',
+      opening_cash_usd: '0'
+    };
+
+    const payload = {
+      users,
+      categories: cats,
+      products,
+      transactions: [],
+      transaction_items: [],
+      settings: Object.keys(settings).map(k => ({ key: k, value: settings[k] })),
+      held_orders: [],
+      stock_movements: [],
+      daily_closes: []
+    };
+
+    const summary = await pushAll(payload);
+    await setMeta({
+      lastPush: now,
+      pushedBy: 'seed',
+      counts: summary,
+      project: firebaseConfig.projectId
+    });
+    return summary;
+  }
+
+  /* ---------- Expose to the main POS app ---------- */
+  window.FirebaseCloud = {
+    app, analytics, fs,
+    pushAll, pullAll, clearAll, getMeta, setMeta, seedDemo, TABLES,
+    config: firebaseConfig
+  };
+
+  window.dispatchEvent(new CustomEvent('firebase-ready', {
+    detail: window.FirebaseCloud
   }));
 
-  const users = [
-    { id: 'u1', username: 'admin',   password: 'admin123',   name: 'Administrator', role: 'admin',   created: now },
-    { id: 'u2', username: 'cashier', password: 'cashier123', name: 'Cashier User',  role: 'cashier', created: now }
-  ];
-
-  const settings = {
-    store_name: 'My Store', store_address: 'Beirut, Lebanon',
-    store_phone: '+961 1 234 567', tax_rate: '11', tax_enabled: 'true',
-    exchange_rate: '90000', default_currency: 'USD',
-    receipt_footer: 'Thank you for your purchase!', auto_print: 'false',
-    paper_width: '80mm', cash_drawer_enabled: 'true', sound_enabled: 'true',
-    barcode_auto_add: 'true', show_stock: 'true', low_stock_threshold: '10',
-    opening_cash_usd: '0'
-  };
-
-  const payload = {
-    users,
-    categories: cats,
-    products,
-    transactions: [],
-    transaction_items: [],
-    settings: Object.keys(settings).map(k => ({ key: k, value: settings[k] })),
-    held_orders: [],
-    stock_movements: [],
-    daily_closes: []
-  };
-
-  const summary = await pushAll(payload);
-  await setMeta({
-    lastPush: now,
-    pushedBy: 'seed',
-    counts: summary,
-    project: firebaseConfig.projectId
-  });
-  return summary;
-}
-
-/* ---------- Expose to main app ---------- */
-window.FirebaseCloud = {
-  app, analytics, fs,
-  pushAll, pullAll, clearAll, getMeta, setMeta, seedDemo, TABLES,
-  config: firebaseConfig
-};
-
-window.dispatchEvent(new CustomEvent('firebase-ready', {
-  detail: window.FirebaseCloud
-}));
-
-console.log('%cFirebase module loaded ✓', 'color:#00A76F;font-weight:bold', firebaseConfig.projectId);
+  console.log('%cFirebase module loaded ✓', 'color:#00A76F;font-weight:bold', firebaseConfig.projectId);
 </script>
 
 <!-- ============================================================
@@ -810,11 +809,9 @@ var Cloud = {
     try {
       Toast.show('Pulling from cloud…', 'info');
       var data = await this._api.pullAll();
-      // FK-safe delete order
       var delOrder = ['transaction_items','transactions','stock_movements','daily_closes',
                       'held_orders','products','categories','users','settings'];
       for (var i = 0; i < delOrder.length; i++) dbRun('DELETE FROM ' + delOrder[i]);
-      // FK-safe insert order
       var insOrder = ['users','categories','products','transactions','transaction_items',
                       'settings','held_orders','stock_movements','daily_closes'];
       for (var t = 0; t < insOrder.length; t++) {
@@ -2996,7 +2993,7 @@ userForm:function(id){
   var h='<div class="m-hd"><h3>'+(ie?'Edit':'Add')+' User</h3><button class="m-close" onclick="Modal.close()"><i class="fas fa-times"></i></button></div>'+
     '<div class="m-body">'+
     '<div class="fg"><label>Full Name</label><input type="text" id="ufN" value="'+U.esc(u?u.name:'')+'"></div>'+
-    '<div class="fg"><label>Username</label><input type="text" id="ufU" value="'+U.esc(u?u.username:'')+'" '+(ie?'readonly style="opacity:.6"':'')+'"></div>'+
+    '<div class="fg"><label>Username</label><input type="text" id="ufU" value="'+U.esc(u?u.username:'')+'" '+(ie?'readonly style="opacity:.6"':'')+'></div>'+
     '<div class="fg"><label>'+(ie?'New Password (blank=keep)':'Password')+'</label><input type="password" id="ufP"></div>'+
     '<div class="fg"><label>Role</label><select id="ufR">'+
     '<option value="admin" '+(u&&u.role==='admin'?'selected':'')+'>Admin</option>'+
