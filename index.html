@@ -2963,6 +2963,57 @@ function showMain(){
   document.getElementById('loginView').style.display='none';
   document.getElementById('mainView').classList.add('on');
   renderHeader();Router.nav('pos');
+  setTimeout(firstRunCloudCheck, 1500);
+}
+
+function firstRunCloudCheck(){
+  // Only run if Firebase is connected and user is admin
+  if (!Cloud._ready || !Cloud._api) return;
+  if (!Auth.admin()) return;
+
+  // Count local data
+  var localTx    = dbVal("SELECT COUNT(*) FROM transactions", 0);
+  var localProds = dbVal("SELECT COUNT(*) FROM products", 0);
+  var localUsers = dbVal("SELECT COUNT(*) FROM users", 0);
+
+  // "Fresh device" = no transactions AND only seed data (<=16 products, <=2 users)
+  var looksFresh = (localTx === 0 && localProds <= 16 && localUsers <= 2);
+  if (!looksFresh) return;
+
+  // Ask cloud what it has
+  Cloud._api.getMeta().then(function(meta){
+    if (!meta || !meta.counts) return;
+    var cloudTx     = meta.counts.transactions || 0;
+    var cloudProds  = meta.counts.products     || 0;
+    var cloudUsers  = meta.counts.users        || 0;
+    if (cloudTx === 0 && cloudProds <= 16) return;  // Cloud is also empty/seed
+
+    // Show the prompt
+    var h =
+      '<div class="m-hd"><h3>☁️ Cloud Data Available</h3>'+
+      '<button class="m-close" onclick="Modal.close()"><i class="fas fa-times"></i></button></div>'+
+      '<div class="m-body">'+
+        '<div style="text-align:center;margin-bottom:16px">'+
+          '<i class="fas fa-cloud-download-alt" style="font-size:40px;color:var(--accent)"></i>'+
+        '</div>'+
+        '<p style="font-size:14px;margin-bottom:16px">Your local device is empty (or has demo data), but Firebase has real data stored from another device.</p>'+
+        '<div style="background:var(--aglow);border:1px solid rgba(0,167,111,.25);border-radius:var(--rs);padding:14px;font-size:13px">'+
+          '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>Products</span><strong>'+cloudProds+'</strong></div>'+
+          '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>Transactions</span><strong>'+cloudTx+'</strong></div>'+
+          '<div style="display:flex;justify-content:space-between"><span>Users</span><strong>'+cloudUsers+'</strong></div>'+
+        '</div>'+
+        '<p style="margin-top:16px;font-size:12px;color:var(--text2)">Loading will <strong>replace</strong> your local demo data with the cloud copy. Your local data has nothing valuable, so this is safe.</p>'+
+      '</div>'+
+      '<div class="m-foot">'+
+        '<button class="btn btn-s" onclick="Modal.close()">Keep Local Demo</button>'+
+        '<button class="btn btn-p" onclick="Modal.close();Cloud.pull()">'+
+          '<i class="fas fa-cloud-download-alt"></i> Load Cloud Data'+
+        '</button>'+
+      '</div>';
+    Modal.open(h);
+  }).catch(function(e){
+    console.warn('firstRunCloudCheck:', e.message);
+  });
 }
 function doLogin(){
   var un=document.getElementById('lUser').value.trim();
