@@ -400,9 +400,11 @@ button:disabled{cursor:not-allowed;opacity:.45}
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
 import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-analytics.js";
 import {
-  getFirestore, doc, setDoc, getDoc, writeBatch, collection, getDocs
+  getFirestore, doc, setDoc, getDoc, deleteDoc,
+  writeBatch, collection, getDocs
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
+/* ---------- Firebase configuration ---------- */
 const firebaseConfig = {
   apiKey: "AIzaSyCmj9fwRLmiQU-g5zvd6XzE8i2X9eNr7TQ",
   authDomain: "hyperpos-12210.firebaseapp.com",
@@ -413,19 +415,25 @@ const firebaseConfig = {
   measurementId: "G-QHTGVPS19K"
 };
 
+/* ---------- Initialize ---------- */
 let app, analytics = null, fs;
 try {
   app = initializeApp(firebaseConfig);
-  try { analytics = getAnalytics(app); } catch (e) { console.warn('Analytics unavailable:', e.message); }
+  try { analytics = getAnalytics(app); }
+  catch (e) { console.warn('Analytics unavailable:', e.message); }
   fs = getFirestore(app);
 } catch (e) {
   console.error('Firebase init failed:', e);
 }
 
-const TABLES = ['users','categories','products','transactions','transaction_items',
-                'settings','held_orders','stock_movements','daily_closes'];
+/* ---------- Mirrored collections ---------- */
+const TABLES = [
+  'users', 'categories', 'products', 'transactions', 'transaction_items',
+  'settings', 'held_orders', 'stock_movements', 'daily_closes'
+];
 
-async function pushAll(data) {
+/* ---------- PUSH: SQLite data -> Firestore ---------- */
+async function pushAll(data, onProgress) {
   if (!fs) throw new Error('Firestore not initialized');
   const summary = {};
   for (const tableName of Object.keys(data)) {
@@ -440,11 +448,13 @@ async function pushAll(data) {
         batch.set(doc(fs, tableName, String(docId)), row, { merge: true });
       }
       await batch.commit();
+      if (onProgress) onProgress(tableName, Math.min(i + 400, rows.length), rows.length);
     }
   }
   return summary;
 }
 
+/* ---------- PULL: Firestore -> SQLite data ---------- */
 async function pullAll() {
   if (!fs) throw new Error('Firestore not initialized');
   const result = {};
@@ -457,10 +467,28 @@ async function pullAll() {
   return result;
 }
 
+/* ---------- Wipe every collection + meta ---------- */
+async function clearAll() {
+  if (!fs) throw new Error('Firestore not initialized');
+  let deleted = 0;
+  for (const tableName of TABLES) {
+    const snap = await getDocs(collection(fs, tableName));
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const batch = writeBatch(fs);
+      docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    deleted += docs.length;
+  }
+  await deleteDoc(doc(fs, '_meta', 'status')).catch(() => {});
+  return deleted;
+}
+
+/* ---------- Metadata document ---------- */
 async function getMeta() {
   if (!fs) throw new Error('Firestore not initialized');
-  const ref = doc(fs, '_meta', 'status');
-  const snap = await getDoc(ref);
+  const snap = await getDoc(doc(fs, '_meta', 'status'));
   return snap.exists() ? snap.data() : null;
 }
 
@@ -469,9 +497,88 @@ async function setMeta(obj) {
   await setDoc(doc(fs, '_meta', 'status'), obj, { merge: true });
 }
 
-window.FirebaseCloud = { app, analytics, fs, pushAll, pullAll, getMeta, setMeta, TABLES };
-window.dispatchEvent(new CustomEvent('firebase-ready', { detail: window.FirebaseCloud }));
-console.log('Firebase module loaded.');
+/* ---------- One-shot demo seed (mirrors seedDefaults) ---------- */
+async function seedDemo() {
+  const now = new Date().toISOString();
+  const cats = [
+    { id: 'c1', name: 'Beverages',   color: '#00A76F' },
+    { id: 'c2', name: 'Snacks',      color: '#D97706' },
+    { id: 'c3', name: 'Food',        color: '#DC2A3E' },
+    { id: 'c4', name: 'Electronics', color: '#2563EB' },
+    { id: 'c5', name: 'Accessories', color: '#7C3AED' },
+    { id: 'c6', name: 'Other',       color: '#DB2777' }
+  ];
+  const products = [
+    ['p1','Espresso','1111111111',2.50,1.00,200,'c1'],
+    ['p2','Cappuccino','1111111112',4.00,1.50,150,'c1'],
+    ['p3','Fresh Juice','1111111113',5.00,2.00,80,'c1'],
+    ['p4','Mineral Water','1111111114',1.00,0.30,500,'c1'],
+    ['p5','Chips Pack','2222222221',1.50,0.60,300,'c2'],
+    ['p6','Chocolate Bar','2222222222',2.00,0.90,250,'c2'],
+    ['p7','Mixed Nuts','2222222223',4.50,2.50,100,'c2'],
+    ['p8','Sandwich','3333333331',6.00,2.50,60,'c3'],
+    ['p9','Pizza Slice','3333333332',4.50,1.80,40,'c3'],
+    ['p10','Salad Bowl','3333333333',7.00,3.00,30,'c3'],
+    ['p11','USB Cable','4444444441',5.00,1.50,100,'c4'],
+    ['p12','Phone Case','4444444442',8.00,2.50,75,'c5'],
+    ['p13','Power Bank','4444444443',15.00,6.00,25,'c4'],
+    ['p14','Sunglasses','5555555551',12.00,4.00,20,'c5'],
+    ['p15','Notebook','6666666661',3.00,1.00,200,'c6'],
+    ['p16','Pen Set','6666666662',2.50,0.80,300,'c6']
+  ].map(p => ({
+    id: p[0], name: p[1], barcode: p[2], price_usd: p[3],
+    cost_usd: p[4], stock: p[5], category_id: p[6], created: now
+  }));
+
+  const users = [
+    { id: 'u1', username: 'admin',   password: 'admin123',   name: 'Administrator', role: 'admin',   created: now },
+    { id: 'u2', username: 'cashier', password: 'cashier123', name: 'Cashier User',  role: 'cashier', created: now }
+  ];
+
+  const settings = {
+    store_name: 'My Store', store_address: 'Beirut, Lebanon',
+    store_phone: '+961 1 234 567', tax_rate: '11', tax_enabled: 'true',
+    exchange_rate: '90000', default_currency: 'USD',
+    receipt_footer: 'Thank you for your purchase!', auto_print: 'false',
+    paper_width: '80mm', cash_drawer_enabled: 'true', sound_enabled: 'true',
+    barcode_auto_add: 'true', show_stock: 'true', low_stock_threshold: '10',
+    opening_cash_usd: '0'
+  };
+
+  const payload = {
+    users,
+    categories: cats,
+    products,
+    transactions: [],
+    transaction_items: [],
+    settings: Object.keys(settings).map(k => ({ key: k, value: settings[k] })),
+    held_orders: [],
+    stock_movements: [],
+    daily_closes: []
+  };
+
+  const summary = await pushAll(payload);
+  await setMeta({
+    lastPush: now,
+    pushedBy: 'seed',
+    counts: summary,
+    project: firebaseConfig.projectId
+  });
+  return summary;
+}
+
+/* ---------- Expose to main app ---------- */
+window.FirebaseCloud = {
+  app, analytics, fs,
+  pushAll, pullAll, clearAll, getMeta, setMeta, seedDemo, TABLES,
+  config: firebaseConfig
+};
+
+window.dispatchEvent(new CustomEvent('firebase-ready', {
+  detail: window.FirebaseCloud
+}));
+
+console.log('%cFirebase module loaded ✓', 'color:#00A76F;font-weight:bold', firebaseConfig.projectId);
 </script>
 
 <!-- ============================================================
@@ -621,7 +728,7 @@ var Cloud = {
   _ready: false,
   _syncing: false,
   _lastSync: null,
-  _autoSync: localStorage.getItem('propos_auto_sync') === 'true',
+  _autoSync: localStorage.getItem('propos_auto_sync') !== 'false',
   _syncTimer: null,
 
   init: function(){
@@ -713,13 +820,10 @@ var Cloud = {
       for (var t = 0; t < insOrder.length; t++) {
         var table = insOrder[t];
         var rows = data[table] || [];
+        var ac = actualColumns(table).map(function(x){return x.name});
         for (var r = 0; r < rows.length; r++) {
           var row = rows[r];
-          var cols = Object.keys(row).filter(function(c){
-            // Ensure column exists locally
-            var ac = actualColumns(table).map(function(x){return x.name});
-            return ac.indexOf(c) >= 0;
-          });
+          var cols = Object.keys(row).filter(function(c){ return ac.indexOf(c) >= 0; });
           if (!cols.length) continue;
           var vals = cols.map(function(c){ return sq(row[c]); });
           dbRun('INSERT OR REPLACE INTO ' + table + ' (' + cols.join(',') + ') VALUES (' + vals.join(',') + ')');
@@ -738,6 +842,37 @@ var Cloud = {
       return false;
     } finally {
       this._syncing = false;
+    }
+  },
+
+  clear: async function(){
+    if (!this._ready || !this._api) { Toast.show('Firebase not ready — check internet', 'err'); return false; }
+    if (!confirm('Wipe every Firestore collection? This deletes all cloud data. Local SQLite is untouched. Continue?')) return false;
+    try {
+      Toast.show('Clearing cloud…', 'info');
+      var n = await this._api.clearAll();
+      Toast.show('Cloud cleared (' + n + ' docs deleted)', 'ok');
+      return true;
+    } catch(e) {
+      console.error(e);
+      Toast.show('Clear failed: ' + e.message, 'err');
+      return false;
+    }
+  },
+
+  seed: async function(){
+    if (!this._ready || !this._api) { Toast.show('Firebase not ready — check internet', 'err'); return false; }
+    if (!confirm('Write demo data (users, categories, products, settings) to Firestore? Existing docs with the same IDs will be overwritten. Continue?')) return false;
+    try {
+      Toast.show('Seeding Firestore…', 'info');
+      var summary = await this._api.seedDemo();
+      var total = Object.keys(summary).reduce(function(s,k){return s + (summary[k]||0)}, 0);
+      Toast.show('Seeded ' + total + ' documents ✓ — use "Pull from Cloud" to load locally', 'ok', 5000);
+      return true;
+    } catch(e) {
+      console.error(e);
+      Toast.show('Seed failed: ' + e.message, 'err');
+      return false;
     }
   }
 };
@@ -812,7 +947,6 @@ var PWA = {
       link.rel = 'manifest';
       link.href = this._manifestUrl;
       document.head.appendChild(link);
-      // favicon
       var fav = document.createElement('link');
       fav.rel = 'icon';
       fav.href = this.iconPng(64);
@@ -830,7 +964,6 @@ var PWA = {
       console.warn('Service Worker requires http(s) hosting — PWA disabled on file://');
       return;
     }
-    var self = this;
     navigator.serviceWorker.register('./sw.js')
       .then(function(reg){ console.log('SW registered:', reg.scope); })
       .catch(function(err){ console.warn('SW registration skipped (place sw.js next to index.html):', err.message); });
@@ -908,7 +1041,6 @@ var PWA = {
 
   manifestSource: function(){
     var m = this.manifestObject();
-    // Replace runtime data URLs with placeholder file names so hosted copies can use real files
     m.icons = [
       { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
       { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
@@ -2619,10 +2751,14 @@ _sCloud:function(){
       '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
         '<button class="btn btn-p" onclick="Cloud.push()"><i class="fas fa-cloud-upload-alt"></i> Push to Cloud</button>'+
         '<button class="btn btn-s" onclick="Cloud.pull()"><i class="fas fa-cloud-download-alt"></i> Pull from Cloud</button>'+
+        '<button class="btn btn-s" onclick="Cloud.seed()"><i class="fas fa-seedling"></i> Seed Demo Data</button>'+
+        '<button class="btn btn-d" onclick="Cloud.clear()"><i class="fas fa-trash"></i> Clear Cloud</button>'+
       '</div>'+
       '<div class="hint" style="margin-top:12px;font-size:12px;color:var(--text3)">'+
         '<strong>Push</strong> uploads everything from SQLite → Firestore (upsert, safe to run repeatedly).<br>'+
-        '<strong>Pull</strong> downloads everything from Firestore → SQLite and replaces local data. The app reloads after pull.'+
+        '<strong>Pull</strong> downloads everything from Firestore → SQLite and replaces local data. The app reloads after pull.<br>'+
+        '<strong>Seed Demo Data</strong> writes the default users, categories, products and settings directly into Firestore. Use "Pull" afterwards to load them locally.<br>'+
+        '<strong>Clear Cloud</strong> wipes every Firestore collection and the metadata document. Local SQLite is untouched.'+
       '</div>'+
     '</div>'+
     '<div class="sg"><h4>Auto Sync</h4>'+
@@ -2943,7 +3079,6 @@ function renderHeader(){
   document.getElementById('appHeader').innerHTML=h;
   var uc=function(){var e=document.getElementById('hClock');if(e)e.textContent=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})};
   uc();setInterval(uc,1000);
-  // Reflect current cloud state on re-render
   Cloud.updateBadge(Cloud._ready ? 'ready' : 'local');
 }
 
@@ -2963,57 +3098,6 @@ function showMain(){
   document.getElementById('loginView').style.display='none';
   document.getElementById('mainView').classList.add('on');
   renderHeader();Router.nav('pos');
-  setTimeout(firstRunCloudCheck, 1500);
-}
-
-function firstRunCloudCheck(){
-  // Only run if Firebase is connected and user is admin
-  if (!Cloud._ready || !Cloud._api) return;
-  if (!Auth.admin()) return;
-
-  // Count local data
-  var localTx    = dbVal("SELECT COUNT(*) FROM transactions", 0);
-  var localProds = dbVal("SELECT COUNT(*) FROM products", 0);
-  var localUsers = dbVal("SELECT COUNT(*) FROM users", 0);
-
-  // "Fresh device" = no transactions AND only seed data (<=16 products, <=2 users)
-  var looksFresh = (localTx === 0 && localProds <= 16 && localUsers <= 2);
-  if (!looksFresh) return;
-
-  // Ask cloud what it has
-  Cloud._api.getMeta().then(function(meta){
-    if (!meta || !meta.counts) return;
-    var cloudTx     = meta.counts.transactions || 0;
-    var cloudProds  = meta.counts.products     || 0;
-    var cloudUsers  = meta.counts.users        || 0;
-    if (cloudTx === 0 && cloudProds <= 16) return;  // Cloud is also empty/seed
-
-    // Show the prompt
-    var h =
-      '<div class="m-hd"><h3>☁️ Cloud Data Available</h3>'+
-      '<button class="m-close" onclick="Modal.close()"><i class="fas fa-times"></i></button></div>'+
-      '<div class="m-body">'+
-        '<div style="text-align:center;margin-bottom:16px">'+
-          '<i class="fas fa-cloud-download-alt" style="font-size:40px;color:var(--accent)"></i>'+
-        '</div>'+
-        '<p style="font-size:14px;margin-bottom:16px">Your local device is empty (or has demo data), but Firebase has real data stored from another device.</p>'+
-        '<div style="background:var(--aglow);border:1px solid rgba(0,167,111,.25);border-radius:var(--rs);padding:14px;font-size:13px">'+
-          '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>Products</span><strong>'+cloudProds+'</strong></div>'+
-          '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>Transactions</span><strong>'+cloudTx+'</strong></div>'+
-          '<div style="display:flex;justify-content:space-between"><span>Users</span><strong>'+cloudUsers+'</strong></div>'+
-        '</div>'+
-        '<p style="margin-top:16px;font-size:12px;color:var(--text2)">Loading will <strong>replace</strong> your local demo data with the cloud copy. Your local data has nothing valuable, so this is safe.</p>'+
-      '</div>'+
-      '<div class="m-foot">'+
-        '<button class="btn btn-s" onclick="Modal.close()">Keep Local Demo</button>'+
-        '<button class="btn btn-p" onclick="Modal.close();Cloud.pull()">'+
-          '<i class="fas fa-cloud-download-alt"></i> Load Cloud Data'+
-        '</button>'+
-      '</div>';
-    Modal.open(h);
-  }).catch(function(e){
-    console.warn('firstRunCloudCheck:', e.message);
-  });
 }
 function doLogin(){
   var un=document.getElementById('lUser').value.trim();
@@ -3065,7 +3149,6 @@ document.addEventListener('keydown',function(e){
     else{db=new SQL.Database()}
     initDb();
 
-    // Init PWA & cloud listeners now that DOM is available
     try { PWA.init(); } catch(e){ console.warn('PWA init:', e.message); }
 
     bar.style.width='100%';status.textContent='Ready!';
