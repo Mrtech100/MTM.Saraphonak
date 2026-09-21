@@ -394,20 +394,16 @@ button:disabled{cursor:not-allowed;opacity:.45}
 <input type="file" id="dbFileInput" accept=".db,.sqlite,.sqlite3" style="display:none">
 
 <!-- ============================================================
-     Firebase module — YOUR script + Firestore layer
+     Firebase module — original, UNCHANGED
      ============================================================ -->
 <script type="module">
-  // Import the functions you need from the SDKs you need
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
   import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-analytics.js";
-  // Added for Firestore cloud sync (required by the POS Push/Pull buttons)
   import {
     getFirestore, doc, setDoc, getDoc, deleteDoc,
     writeBatch, collection, getDocs
   } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
-  // Your web app's Firebase configuration
-  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
   const firebaseConfig = {
     apiKey: "AIzaSyCmj9fwRLmiQU-g5zvd6XzE8i2X9eNr7TQ",
     authDomain: "hyperpos-12210.firebaseapp.com",
@@ -418,20 +414,16 @@ button:disabled{cursor:not-allowed;opacity:.45}
     measurementId: "G-QHTGVPS19K"
   };
 
-  // Initialize Firebase
   const app = initializeApp(firebaseConfig);
   const analytics = getAnalytics(app);
 
-  /* ---------- Firestore instance (added) ---------- */
   const fs = getFirestore(app);
 
-  /* ---------- Mirrored collections ---------- */
   const TABLES = [
     'users', 'categories', 'products', 'transactions', 'transaction_items',
     'settings', 'held_orders', 'stock_movements', 'daily_closes'
   ];
 
-  /* ---------- PUSH: SQLite data -> Firestore ---------- */
   async function pushAll(data, onProgress) {
     if (!fs) throw new Error('Firestore not initialized');
     const summary = {};
@@ -453,7 +445,6 @@ button:disabled{cursor:not-allowed;opacity:.45}
     return summary;
   }
 
-  /* ---------- PULL: Firestore -> SQLite data ---------- */
   async function pullAll() {
     if (!fs) throw new Error('Firestore not initialized');
     const result = {};
@@ -466,7 +457,6 @@ button:disabled{cursor:not-allowed;opacity:.45}
     return result;
   }
 
-  /* ---------- Wipe every collection + meta ---------- */
   async function clearAll() {
     if (!fs) throw new Error('Firestore not initialized');
     let deleted = 0;
@@ -484,7 +474,6 @@ button:disabled{cursor:not-allowed;opacity:.45}
     return deleted;
   }
 
-  /* ---------- Metadata document ---------- */
   async function getMeta() {
     if (!fs) throw new Error('Firestore not initialized');
     const snap = await getDoc(doc(fs, '_meta', 'status'));
@@ -496,7 +485,6 @@ button:disabled{cursor:not-allowed;opacity:.45}
     await setDoc(doc(fs, '_meta', 'status'), obj, { merge: true });
   }
 
-  /* ---------- One-shot demo seed ---------- */
   async function seedDemo() {
     const now = new Date().toISOString();
     const cats = [
@@ -566,7 +554,6 @@ button:disabled{cursor:not-allowed;opacity:.45}
     return summary;
   }
 
-  /* ---------- Expose to the main POS app ---------- */
   window.FirebaseCloud = {
     app, analytics, fs,
     pushAll, pullAll, clearAll, getMeta, setMeta, seedDemo, TABLES,
@@ -581,11 +568,39 @@ button:disabled{cursor:not-allowed;opacity:.45}
 </script>
 
 <!-- ============================================================
+     Realtime helper module — exposes Firestore functions that
+     the original Firebase module does not export. Does NOT touch
+     the original module or its config.
+     ============================================================ -->
+<script type="module">
+  import { getApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+  import {
+    getFirestore, doc, setDoc, getDoc, deleteDoc,
+    collection, getDocs, onSnapshot, writeBatch
+  } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+
+  function boot() {
+    try {
+      const fs = getFirestore(getApp());
+      window.__fs = { fs, doc, setDoc, getDoc, deleteDoc, collection, getDocs, onSnapshot, writeBatch };
+      window.__fsReady = true;
+      console.log('%c🔁 Firestore realtime helpers ready', 'color:#2563EB;font-weight:bold');
+      window.dispatchEvent(new CustomEvent('fs-ready'));
+    } catch (e) {
+      console.warn('__fs init failed, retrying…', e.message);
+      setTimeout(boot, 200);
+    }
+  }
+  if (window.FirebaseCloud) boot();
+  else window.addEventListener('firebase-ready', boot, { once: true });
+</script>
+
+<!-- ============================================================
      Main application script
      ============================================================ -->
 <script>
 /* ============================================================
-   ProPOS — SQLite POS + Firebase Cloud Sync + PWA
+   ProPOS — SQLite POS + Firebase Cloud Sync + Realtime Mirror + PWA
    ============================================================ */
 
 var SQL=null, db=null, saveTimer=null;
@@ -707,10 +722,7 @@ function scheduleSave(){
   saveTimer=setTimeout(function(){
     try{
       IDB.save(db.export()).catch(function(){});
-      if (Cloud._autoSync && Cloud._ready && !Cloud._syncing) {
-        clearTimeout(Cloud._syncTimer);
-        Cloud._syncTimer = setTimeout(function(){ Cloud.push(true); }, 5000);
-      }
+      if (Cloud._autoSync) Sync.schedulePush();
     }catch(e){}
   },500);
 }
@@ -720,7 +732,7 @@ try{bc=new BroadcastChannel('propos_sql');bc.onmessage=function(e){if(e.data&&e.
 function broadcastRefresh(){if(bc)try{bc.postMessage({t:'r'})}catch(e){}}
 
 /* ============================================================
-   Firebase Cloud Sync wrapper
+   Firebase Cloud Sync wrapper — original API preserved
    ============================================================ */
 var Cloud = {
   _api: null,
@@ -749,6 +761,7 @@ var Cloud = {
     this._autoSync = !!v;
     localStorage.setItem('propos_auto_sync', v ? 'true' : 'false');
     Toast.show(v ? 'Auto-sync enabled' : 'Auto-sync disabled', 'ok');
+    if (v) Sync.schedulePush();
   },
 
   updateBadge: function(state){
@@ -756,7 +769,7 @@ var Cloud = {
     var s = document.getElementById('cloudStatus');
     if(!b || !s) return;
     b.className = 'sql-badge';
-    if(state === 'ready'){ b.classList.add('cloud-off'); s.textContent = 'Cloud'; b.style.color=''; }
+    if(state === 'ready'){ b.classList.add('cloud-off'); s.textContent = 'Live'; b.style.color=''; }
     else if(state === 'syncing'){ b.classList.add('cloud-sync'); s.textContent = 'Syncing…'; }
     else if(state === 'error'){ b.classList.add('cloud-err'); s.textContent = 'Error'; }
     else { b.classList.add('cloud-off'); s.textContent = 'Local'; }
@@ -864,7 +877,7 @@ var Cloud = {
       Toast.show('Seeding Firestore…', 'info');
       var summary = await this._api.seedDemo();
       var total = Object.keys(summary).reduce(function(s,k){return s + (summary[k]||0)}, 0);
-      Toast.show('Seeded ' + total + ' documents ✓ — use "Pull from Cloud" to load locally', 'ok', 5000);
+      Toast.show('Seeded ' + total + ' documents ✓ — realtime sync will load them automatically', 'ok', 5000);
       return true;
     } catch(e) {
       console.error(e);
@@ -874,6 +887,197 @@ var Cloud = {
   }
 };
 Cloud.init();
+
+/* ============================================================
+   Sync — Firestore ⇄ SQLite realtime mirror
+   Every device stays identical: cloud writes land in SQLite
+   within ~1s, and local writes diff-push to Firestore.
+   ============================================================ */
+var Sync = {
+  _ready: false,
+  _listeners: [],
+  _applyingRemote: false,
+  _pushTimer: null,
+  _pushing: false,
+  _lastPushed: {},
+
+  KEY_FIELD: {
+    users: 'id', categories: 'id', products: 'id',
+    transactions: 'id', transaction_items: 'id',
+    settings: 'key',
+    held_orders: 'id', stock_movements: 'id', daily_closes: 'id'
+  },
+
+  init: function () {
+    var self = this;
+    var attach = function () {
+      if (self._ready) return;
+      if (!window.__fs || !window.FirebaseCloud || !window.FirebaseCloud.fs) return;
+      self._ready = true;
+      self.attachListeners();
+      self.initialPull();
+      console.log('%c🔄 Sync: realtime listeners attached', 'color:#2563EB;font-weight:bold');
+    };
+    if (!attach()) {
+      window.addEventListener('fs-ready', attach);
+      window.addEventListener('firebase-ready', attach);
+    }
+  },
+
+  attachListeners: function () {
+    var self = this;
+    var fs = window.__fs;
+    Object.keys(this.KEY_FIELD).forEach(function (table) {
+      var q = fs.collection(fs.fs, table);
+      var unsub = fs.onSnapshot(q, function (snap) {
+        if (self._applyingRemote) return;
+        var changed = false;
+        snap.docChanges().forEach(function (ch) {
+          if (ch.type === 'removed') {
+            self.applyRemoteDelete(table, ch.doc.id);
+            changed = true;
+          } else {
+            self.applyRemoteUpsert(table, ch.doc.id, ch.doc.data());
+            changed = true;
+          }
+        });
+        if (!changed) return;
+        broadcastRefresh();
+        if (!document.getElementById('mO').classList.contains('on')) {
+          try { Router.render(); } catch (e) {}
+        }
+      }, function (err) {
+        console.warn('Sync listener error on ' + table + ': ' + err.message);
+      });
+      self._listeners.push(unsub);
+    });
+  },
+
+  applyRemoteUpsert: function (table, docId, row) {
+    this._applyingRemote = true;
+    try {
+      var keyField = this.KEY_FIELD[table];
+      var cols = actualColumns(table);
+      if (!cols.length) return;
+      var useCols = cols.filter(function (c) { return c in row; });
+      if (!useCols.length) return;
+      var vals  = useCols.map(function (c) { return sq(row[c]); });
+      var keyVal = (row[keyField] !== undefined) ? row[keyField] : docId;
+      dbRun("DELETE FROM " + table + " WHERE " + keyField + "=" + sq(keyVal));
+      dbRun("INSERT INTO " + table + " (" + useCols.join(',') + ") VALUES (" + vals.join(',') + ")");
+    } catch (e) {
+      logDbError('SYNC-UPSERT-' + table, e);
+    } finally {
+      this._applyingRemote = false;
+    }
+  },
+
+  applyRemoteDelete: function (table, docId) {
+    this._applyingRemote = true;
+    try {
+      var keyField = this.KEY_FIELD[table];
+      dbRun("DELETE FROM " + table + " WHERE " + keyField + "=" + sq(docId));
+    } catch (e) {
+      logDbError('SYNC-DELETE-' + table, e);
+    } finally {
+      this._applyingRemote = false;
+    }
+  },
+
+  initialPull: async function () {
+    try {
+      var data = await window.FirebaseCloud.pullAll();
+      var self = this;
+      this._applyingRemote = true;
+      Object.keys(data).forEach(function (table) {
+        var keyField = self.KEY_FIELD[table];
+        if (!keyField) return;
+        var cols = actualColumns(table);
+        (data[table] || []).forEach(function (row) {
+          var useCols = cols.filter(function (c) { return c in row; });
+          if (!useCols.length) return;
+          var vals = useCols.map(function (c) { return sq(row[c]); });
+          var keyVal = row[keyField];
+          dbRun("DELETE FROM " + table + " WHERE " + keyField + "=" + sq(keyVal));
+          dbRun("INSERT INTO " + table + " (" + useCols.join(',') + ") VALUES (" + vals.join(',') + ")");
+        });
+      });
+      this._applyingRemote = false;
+      try { IDB.save(db.export()).catch(function () {}); } catch (e) {}
+      broadcastRefresh();
+      if (!document.getElementById('mO').classList.contains('on')) {
+        try { Router.render(); } catch (e) {}
+      }
+      console.log('%c🔄 Sync: initial pull complete', 'color:#2563EB');
+    } catch (e) {
+      this._applyingRemote = false;
+      console.warn('Initial pull failed:', e.message);
+    }
+  },
+
+  schedulePush: function () {
+    if (!this._ready || this._applyingRemote) return;
+    var self = this;
+    clearTimeout(this._pushTimer);
+    this._pushTimer = setTimeout(function () { self.pushChanges(); }, 400);
+  },
+
+  pushChanges: async function () {
+    if (!this._ready || this._pushing || this._applyingRemote) return;
+    this._pushing = true;
+    try {
+      var fs = window.__fs;
+      var tables = Object.keys(this.KEY_FIELD);
+      for (var i = 0; i < tables.length; i++) {
+        var table = tables[i];
+        var keyField = this.KEY_FIELD[table];
+        var rows = dbRows("SELECT * FROM " + table);
+        var current = {};
+        for (var r = 0; r < rows.length; r++) {
+          current[String(rows[r][keyField])] = rows[r];
+        }
+        var prev = this._lastPushed[table] || {};
+
+        var toWrite = [];
+        for (var k in current) {
+          var h = JSON.stringify(current[k]);
+          if (prev[k] !== h) toWrite.push({ id: k, data: current[k] });
+        }
+        var toDelete = [];
+        for (var k2 in prev) {
+          if (!(k2 in current)) toDelete.push(k2);
+        }
+
+        if (toWrite.length || toDelete.length) {
+          var batch = fs.writeBatch(fs.fs);
+          toWrite.forEach(function (item) {
+            batch.set(fs.doc(fs.fs, table, String(item.id)), item.data, { merge: true });
+          });
+          toDelete.forEach(function (id) {
+            batch.delete(fs.doc(fs.fs, table, String(id)));
+          });
+          await batch.commit();
+          console.log('🔄 pushed ' + toWrite.length + ' / deleted ' + toDelete.length + ' → ' + table);
+        }
+
+        var baseline = {};
+        for (var k3 in current) baseline[k3] = JSON.stringify(current[k3]);
+        this._lastPushed[table] = baseline;
+      }
+    } catch (e) {
+      console.warn('Push changes failed:', e.message);
+    } finally {
+      this._pushing = false;
+    }
+  },
+
+  shutdown: function () {
+    this._listeners.forEach(function (fn) { try { fn(); } catch (e) {} });
+    this._listeners = [];
+    this._ready = false;
+  }
+};
+Sync.init();
 
 /* ============================================================
    PWA — manifest injection, service worker, install prompt
@@ -2722,6 +2926,7 @@ settings:function(){
 _sCloud:function(){
   var lastSync = Cloud._lastSync ? Cloud._lastSync.toLocaleString() : 'Never';
   var status = Cloud._ready ? '<span style="color:var(--accent)">● Connected</span>' : '<span style="color:var(--warn)">● Connecting…</span>';
+  var syncStatus = Sync._ready ? '<span style="color:var(--accent)">● Live</span>' : '<span style="color:var(--warn)">● Waiting…</span>';
   var counts = '';
   try {
     counts = '<div class="kv" style="grid-template-columns:1fr 1fr">'+
@@ -2734,35 +2939,39 @@ _sCloud:function(){
     '</div>';
   } catch(e) {}
   return '<div class="set-sec"><h2>Cloud Sync (Firebase)</h2>'+
-    '<p class="sd">Push / pull your entire database (products, sales, users, settings) to Firebase Firestore.</p>'+
+    '<p class="sd">Realtime mirror between SQLite and Firebase Firestore. Every device sees the same data within ~1 second.</p>'+
     '<div class="sg"><h4>Status</h4>'+
       '<div class="kv" style="grid-template-columns:1fr 1fr">'+
         '<div><span>Firebase</span><strong>'+status+'</strong></div>'+
-        '<div><span>Last sync</span><strong>'+U.esc(lastSync)+'</strong></div>'+
+        '<div><span>Realtime Sync</span><strong>'+syncStatus+'</strong></div>'+
+        '<div><span>Last manual push</span><strong>'+U.esc(lastSync)+'</strong></div>'+
         '<div><span>Project</span><strong style="font-family:var(--fd)">hyperpos-12210</strong></div>'+
         '<div><span>Auto-sync</span><strong>'+(Cloud._autoSync ? 'Enabled' : 'Disabled')+'</strong></div>'+
+        '<div><span>Listeners</span><strong>'+Sync._listeners.length+'</strong></div>'+
       '</div>'+
     '</div>'+
     '<div class="sg"><h4>Local Data</h4>'+counts+'</div>'+
     '<div class="sg"><h4>Actions</h4>'+
       '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
-        '<button class="btn btn-p" onclick="Cloud.push()"><i class="fas fa-cloud-upload-alt"></i> Push to Cloud</button>'+
-        '<button class="btn btn-s" onclick="Cloud.pull()"><i class="fas fa-cloud-download-alt"></i> Pull from Cloud</button>'+
+        '<button class="btn btn-p" onclick="Cloud.push()"><i class="fas fa-cloud-upload-alt"></i> Force Full Push</button>'+
+        '<button class="btn btn-s" onclick="Cloud.pull()"><i class="fas fa-cloud-download-alt"></i> Force Full Pull</button>'+
         '<button class="btn btn-s" onclick="Cloud.seed()"><i class="fas fa-seedling"></i> Seed Demo Data</button>'+
         '<button class="btn btn-d" onclick="Cloud.clear()"><i class="fas fa-trash"></i> Clear Cloud</button>'+
       '</div>'+
       '<div class="hint" style="margin-top:12px;font-size:12px;color:var(--text3)">'+
-        '<strong>Push</strong> uploads everything from SQLite → Firestore (upsert, safe to run repeatedly).<br>'+
-        '<strong>Pull</strong> downloads everything from Firestore → SQLite and replaces local data. The app reloads after pull.<br>'+
-        '<strong>Seed Demo Data</strong> writes the default users, categories, products and settings directly into Firestore. Use "Pull" afterwards to load them locally.<br>'+
-        '<strong>Clear Cloud</strong> wipes every Firestore collection and the metadata document. Local SQLite is untouched.'+
+        'Realtime sync is on by default: every write to SQLite is diff-pushed to Firestore, and every Firestore change lands in SQLite within ~1 second. '+
+        'The buttons above are manual escape hatches — use them only when you need a full overwrite in one direction.<br><br>'+
+        '<strong>Force Full Push</strong> uploads everything (upsert, safe).<br>'+
+        '<strong>Force Full Pull</strong> wipes local SQLite and replaces with the cloud copy, then reloads.<br>'+
+        '<strong>Seed Demo Data</strong> writes default users, categories, products and settings straight into Firestore — realtime sync loads them locally within a second.<br>'+
+        '<strong>Clear Cloud</strong> wipes every Firestore collection. Local SQLite is untouched (but will re-push on next change).'+
       '</div>'+
     '</div>'+
     '<div class="sg"><h4>Auto Sync</h4>'+
-      '<div class="sr"><div class="sr-label">Push automatically after changes</div><div class="sr-ctrl">'+
+      '<div class="sr"><div class="sr-label">Realtime sync</div><div class="sr-ctrl">'+
         '<label class="tog"><input type="checkbox" id="cs_auto" '+(Cloud._autoSync?'checked':'')+' onchange="Cloud.setAuto(this.checked)"><span class="tog-sl"></span></label>'+
       '</div></div>'+
-      '<div class="hint" style="font-size:11px;color:var(--text3)">When enabled, the entire database is pushed to Firebase ~5 seconds after each change. Consider Firestore free-tier write limits if you have high transaction volume.</div>'+
+      '<div class="hint" style="font-size:11px;color:var(--text3)">When enabled, changes are pushed ~400 ms after each write (debounced). Consider Firestore free-tier write limits if you have high transaction volume — otherwise leave it on.</div>'+
     '</div>'+
   '</div>';
 },
@@ -3068,7 +3277,7 @@ function renderHeader(){
     h+='<button class="nav-b '+(Router.cur==='settings'?'on':'')+'" data-p="settings" onclick="Router.nav(\'settings\')"><i class="fas fa-cog"></i>Settings</button>';
   }
   h+='</nav></div><div class="h-right">'+
-    '<div class="sql-badge cloud-off" id="cloudBadge" title="Firebase cloud sync"><i class="fas fa-cloud"></i> <span id="cloudStatus">Local</span></div>'+
+    '<div class="sql-badge cloud-off" id="cloudBadge" title="Firebase realtime sync"><i class="fas fa-cloud"></i> <span id="cloudStatus">Local</span></div>'+
     '<button class="btn btn-s btn-sm" id="pwaInstallBtn" onclick="PWA.install()" style="display:none"><i class="fas fa-download"></i> Install</button>'+
     '<div class="h-clock" id="hClock"></div>'+
     '<div class="h-user"><div><div class="un">'+U.esc(Auth.name())+'</div><div class="ur">'+Auth.role()+'</div></div></div>'+
